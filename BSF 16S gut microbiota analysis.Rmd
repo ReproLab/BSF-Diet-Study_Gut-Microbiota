@@ -1,0 +1,1427 @@
+---
+title: "BSF 16S Gut Microbiota Analysis"
+author: "Shaktheeshwari Silvaraju"
+date: "5/8/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Alpha and beta diversity statistical analysis
+
+library(tidyverse)
+library(qiime2R)
+library(ggplot2)
+library(ggpubr)
+library(grid)
+library(tidyverse)
+library(vegan)
+library(phyloseq)
+library(ANCOMBC)
+library(DESeq2)
+library(ComplexHeatmap)
+library(ggplot2)
+library(labdsv)
+library(DECIPHER)
+library(ape)
+library(plotly)
+library(philr)
+library(adespatial)
+library(devtools)
+library(MicrobeR)
+library(microbiome)
+library(microbiomeSeq)
+library(ranacapa)
+library(gridExtra)
+library(knitr)
+library(ggdendro)
+library(RColorBrewer)
+library(microbiomeutilities)
+library(VennDiagram)
+library(RColorBrewer)
+library(dplyr)
+library(reshape2)
+library(kableExtra)
+library(mia)
+library(mvabund)
+library(venneuler)
+library(eulerr)
+library(heatmaply)
+
+
+# Shannon plot
+
+```
+metadata<-read_q2metadata("metadata.tsv")
+shannon<-read_qza("shannon_vector.qza")
+
+view(metadata)
+
+shannon<-shannon$data %>% rownames_to_column("SampleID")
+
+view(shannon)
+
+gplots::venn(list(metadata=metadata$SampleID, shannon=shannon$SampleID))
+
+metadata1<- metadata %>% left_join(shannon)
+
+view(metadata1)
+head(metadata1)
+
+write.table(metadata1, file = "shannonmetadata.csv", sep = ",")
+```
+
+**Plot for D0 and D5**
+
+```
+met2 <- metadata1[c(1:33,64:95),c(1:17)]
+view(met2)
+
+met2$diet_f = factor(met2$diet, levels=c('D0','CF','OKA','PKM','RIB','SBM', 'M', 'P', 'MHP', 'MLP', 'NUS'))
+legend_title <- "Line" #rename the legend
+
+plot1<-met2 %>%
+  filter(!is.na(shannon_entropy)) %>%
+  ggplot(aes(x= line, y=shannon_entropy, fill=line)) +
+  stat_summary(geom="bar", fun.data=mean_se, color="black") + #here black is the outline for the bars
+  geom_jitter(shape=21, width=0.1, height=0) +
+  coord_cartesian(ylim=c(0,7)) + # adjust y-axis
+  facet_grid(~diet_f) + # create a panel for each body site
+  xlab("Diet") +
+  ylab("Shannon Diversity") +
+  theme_q2r() +
+  scale_fill_manual(legend_title, values=c("black","white")) + #use renamed legend and specify custom colors
+  theme(legend.position="right") + theme(axis.text.x=element_blank())+ theme(text=element_text(size = 15)) 
+  ```
+
+**Plot for D0 and D10**
+
+```
+met3 <- metadata1[c(1:3,34:66,96:125),c(1:17)]
+view(met3)
+
+met3$diet_f = factor(met3$diet, levels=c('D0','CF','OKA','PKM','RIB','SBM', 'M', 'P', 'MHP', 'MLP', 'NUS'))
+legend_title <- "Line" #rename the legend
+
+plot2<-met3 %>%
+  filter(!is.na(shannon_entropy)) %>%
+  ggplot(aes(x= line, y=shannon_entropy, fill=line)) +
+  stat_summary(geom="bar", fun.data=mean_se, color="black") + #here black is the outline for the bars
+  geom_jitter(shape=21, width=0.1, height=0) +
+  coord_cartesian(ylim=c(0,7)) + # adjust y-axis
+  facet_grid(~diet_f) + # create a panel for each body site
+  xlab("Diet") +
+  ylab("Shannon Diversity") +
+  theme_q2r() +
+  scale_fill_manual(legend_title, values=c("black","white")) + #use renamed legend and specify custom colors
+  theme(legend.position="right") + theme(axis.text.x=element_blank())+ theme(text=element_text(size = 15)) 
+
+
+
+plot <- ggarrange(plot1 + rremove("ylab") + rremove("xlab"), plot2 + rremove("ylab") + rremove("xlab"), # remove axis labels from plots
+                  ncol = 1, nrow = 2,
+                  common.legend = TRUE, legend = "bottom")
+
+
+
+annotate_figure(plot, left = textGrob("Shannon Diversity", rot = 90, vjust = 0.5, gp = gpar(cex = 1.3)),
+                bottom = textGrob("Diet", gp = gpar(cex = 1.3)))
+
+```
+
+# significance of variables
+
+```
+hist(metadata1$shannon_entropy, main="Shannon diversity", xlab="", breaks=10)
+
+aov.shannon.line = aov(shannon_entropy ~ line, data=metadata1)
+#Call for the summary of that ANOVA, which will include P-values
+summary(aov.shannon.line)
+
+aov.shannon.diet = aov(shannon_entropy ~ diet, data=metadata1)
+#Call for the summary of that ANOVA, which will include P-values
+summary(aov.shannon.diet)
+
+
+aov.shannon.age = aov(shannon_entropy ~ age, data=metadata1)
+#Call for the summary of that ANOVA, which will include P-values
+summary(aov.shannon.age)
+```
+
+# Load Qiime artifacts
+
+```
+otu <- read.table(file = "feature-table.tsv", sep = "\t", header = T, row.names = 1, 
+                  skip = 1, comment.char = "")
+taxonomy <- read.table(file = "taxonomy.tsv", sep = "\t", header = T ,row.names = 1)
+
+tax <- taxonomy %>%
+  select(Taxon) %>% 
+  separate(Taxon, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), "; ")
+
+tax.clean <- data.frame(row.names = row.names(tax),
+                        Kingdom = str_replace(tax[,1], "d__",""),
+                        Phylum = str_replace(tax[,2], "p__",""),
+                        Class = str_replace(tax[,3], "c__",""),
+                        Order = str_replace(tax[,4], "o__",""),
+                        Family = str_replace(tax[,5], "f__",""),
+                        Genus = str_replace(tax[,6], "g__",""),
+                        Species = str_replace(tax[,7], "s__",""),
+                        stringsAsFactors = FALSE)
+
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean=="__"] <- ""
+
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,7] != ""){
+    tax.clean$Species[i] <- paste(tax.clean$Genus[i], tax.clean$Species[i], sep = " ")
+  } else if (tax.clean[i,2] == ""){
+    kingdom <- paste("Unclassified", tax.clean[i,1], sep = " ")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Unclassified", tax.clean[i,2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Unclassified", tax.clean[i,3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Unclassified", tax.clean[i,4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Unclassified", tax.clean[i,5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Unclassified ",tax.clean$Genus[i], sep = " ")
+  }
+}
+
+
+metadata <- read.table(file = "metadata.tsv", sep = "\t", header = T, row.names = 1)
+OTU = otu_table(as.matrix(otu), taxa_are_rows = TRUE)  
+TAX = tax_table(as.matrix(tax.clean))  
+SAMPLE <- sample_data(metadata)  
+TREE = read_tree("tree.nwk")  
+ps <- phyloseq(OTU, TAX, SAMPLE,TREE)  
+
+```
+
+# Pairwise test with Wilcoxon rank-sum test, corrected by FDR method:Shannon diversity
+
+```
+wilcox.shannon <- pairwise.wilcox.test(rich$Shannon, 
+                                       sample_data(ps)$diet, 
+                                       p.adjust.method = "BH")
+
+tab.shannon <- wilcox.shannon$p.value %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "group1") %>%
+  gather(key="group2", value="p.adj", -group1) %>%
+  na.omit()
+
+view(tab.shannon)
+```
+
+# Phylum: Significance of relative abundance
+```
+data <- read.csv(file = "one way anova absolute relative abundance.csv", header = TRUE)
+
+
+data.subset <- subset(data, substrate %in% c("Veg","Meat"))
+
+View(data.subset)
+
+anova_result <- aov(Proteobacteria ~ substrate, data=data.subset)
+summary(anova_result)
+
+anova_result2 <- aov(Actinobacteriota ~ substrate, data=data.subset)
+summary(anova_result2)
+
+anova_result2 <- aov(Bacteroidota ~ substrate, data=data.subset)
+summary(anova_result2)
+
+data.meat <- subset(data, substrate %in% "Meat")
+
+anova_result <- aov(Proteobacteria ~ line, data=data.meat)
+summary(anova_result)
+
+anova_result <- aov(Firmicutes_D ~ line, data=data.meat)
+summary(anova_result)
+```
+
+# Genus: Significance of relative abundance
+
+```
+data2 <- read.csv(file = "genus one way anova absolute relative abundance.csv", header = TRUE)
+
+
+data.age <- subset(data2, age %in% c("D5", "D10"))
+
+View(data.age)
+
+anova_result_age1 <- aov(Dysgonomonas ~ age, data=data.age)
+summary(anova_result_age1)
+
+anova_result_age2 <- aov(Ignatzschineria ~ age, data=data.age)
+summary(anova_result_age2)
+
+anova_result_age3 <- aov(Scrofimicrobium ~ age, data=data.age)
+summary(anova_result_age3)
+
+anova_result_age4 <- aov(Sphingobacterium ~ age, data=data.age)
+summary(anova_result_age4)
+
+anova_result_age5 <- aov(Lactiplantibacillus ~ age, data=data.age)
+summary(anova_result_age5)
+
+anova_result_age <- aov(Bacillus_P_294101 ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Lysinibacillus_304693 ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Levilactobacillus ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Providencia_A_732258 ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Morganella ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Lacrimispora ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Klebsiella_724518 ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Proteus ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Enterococcus_H_360604 ~ age, data=data.age)
+summary(anova_result_age)
+
+anova_result_age <- aov(Paenibacillus_J_366884 ~ age, data=data.age)
+summary(anova_result_age)
+```
+
+**Substrate**
+```
+data.subset <- subset(data2, substrate %in% c("Veg","Meat"))
+
+View(data.subset)
+
+anova_result <- aov(Scrofimicrobium ~ substrate, data=data.subset)
+summary(anova_result)
+    
+
+anova_result <- aov(Sphingobacterium ~ substrate, data=data.subset)
+summary(anova_result)
+
+
+anova_result4 <- aov(Providencia_A_732258 ~ substrate, data=data.subset)
+summary(anova_result4)
+
+anova_result5 <- aov(Proteus ~ substrate, data=data.subset)
+summary(anova_result5)
+
+
+anova_result6 <- aov(Morganella ~ substrate, data=data.subset)
+summary(anova_result6)
+
+
+anova_result7 <- aov(Klebsiella_724518 ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Dysgonomonas ~ substrate, data=data.subset)
+summary(anova_result7)
+ 
+anova_result7 <- aov(Paenibacillus_J_366884 ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Acetobacter ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Lacrimispora ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Levilactobacillus ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Lactiplantibacillus ~ substrate, data=data.subset)
+summary(anova_result7)
+
+anova_result7 <- aov(Enterococcus_H_360604 ~ substrate, data=data.subset)
+summary(anova_result7)
+```
+
+**Line**
+```
+anova_result9 <- aov(Morganella  ~ line, data=data2)
+summary(anova_result9)
+
+anova_result9 <- aov(Enterococcus_H_360604  ~ line, data=data2)
+summary(anova_result9)
+
+anova_result9 <- aov( Providencia_A_732258 ~ line, data=data2)
+summary(anova_result9)
+
+anova_result9 <- aov(Levilactobacillus  ~ line, data=data2)
+summary(anova_result9)
+
+anova_result10 <- aov(Paenibacillus_J_366884 ~ line, data=data2)
+summary(anova_result10)
+
+anova_result10 <- aov(Lacrimispora ~ line, data=data2)
+summary(anova_result10)
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Dysgonomonas ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Proteus ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov( Bacillus_P_294101~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Klebsiella_724518 ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Lysinibacillus_304693 ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Sphingobacterium ~ line, data=data2)
+summary(anova_result)
+
+anova_result <- aov(Peptostreptococcus ~ line, data=data2)
+summary(anova_result)
+```
+
+**CF**
+```
+
+data.CF <- subset(data2, diet %in% "CF70")
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.CF)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.CF)
+summary(anova_result)
+
+anova_result <- aov(Bacteroides_E ~ line, data=data.CF)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data.CF)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.CF)
+summary(anova_result)
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.CF)
+summary(anova_result)
+
+```
+**RIB**
+```
+
+data.RIB <- subset(data2, diet %in% "RIB")
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Sphingobacterium ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.RIB)
+summary(anova_result)
+
+anova_result <- aov(Levilactobacillus ~ line, data=data.RIB)
+summary(anova_result)
+```
+
+**PKM**
+```
+
+data.PKM <- subset(data2, diet %in% "PKM")
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Acetobacter ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Sphingobacterium ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Klebsiella_724518 ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Levilactobacillus ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Ligilactobacillus ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Dysgonomonas ~ line, data=data.PKM)
+summary(anova_result)
+
+anova_result <- aov(Blautia_A_142742 ~ line, data=data.PKM)
+summary(anova_result)
+```
+**SBM**
+```
+data.SBM <- subset(data2, diet %in% "SBM")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Ignatzschineria ~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Morganella~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Corynebacterium ~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.SBM)
+summary(anova_result)
+
+anova_result <- aov(Achromobacter ~ line, data=data.SBM)
+summary(anova_result)
+```
+
+**P**
+```
+data.P <- subset(data2, diet %in% "P")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Paenibacillus_J_366884 ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Paenibacillus_C ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Anaerocolumna ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Lacrimispora ~ line, data=data.P)
+summary(anova_result)
+
+anova_result <- aov(Dysgonomonas ~ line, data=data.P)
+summary(anova_result)
+```
+
+**OKA**
+```
+
+data.OKA <- subset(data2, diet %in% "OKA")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Empedobacter_790298 ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Pseudomonas_E_647464 ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Weissella_A_338544 ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Paenalcaligenes ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Sphingobacterium ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Alcaligenes ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Flavobacterium ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Corynebacterium ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Acinetobacter ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Acetobacter ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Ligilactobacillus ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Dysgonomonas ~ line, data=data.OKA)
+summary(anova_result)
+
+anova_result <- aov(Clostridium_T  ~ line, data=data.OKA)
+summary(anova_result)
+```
+**MLP**
+```
+data.MLP <- subset(data2, diet %in% "MLP")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Lacrimispora ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Scrofimicrobium ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Fusobacterium_A ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Tissierella_B_224124 ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Paenibacillus_C ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Clostridium_T  ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Dysgonomonas  ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Lysinibacillus_304693  ~ line, data=data.MLP)
+summary(anova_result)
+
+anova_result <- aov(Paenibacillus_J_366884  ~ line, data=data.MLP)
+summary(anova_result)
+```
+**M**
+```
+
+data.M <- subset(data2, diet %in% "M")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.M)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.M)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.M)
+summary(anova_result)
+```
+
+**NUS**
+```
+
+data.NUS <- subset(data2, diet %in% "NUS")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.NUS)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.NUS)
+summary(anova_result)
+
+anova_result <- aov(Lactiplantibacillus ~ line, data=data.NUS)
+summary(anova_result)
+
+anova_result <- aov(Klebsiella_724518 ~ line, data=data.NUS)
+summary(anova_result)
+```
+
+**MHP**
+```
+
+data.MHP <- subset(data2, diet %in% "MHP")
+
+anova_result <- aov(Providencia_A_732258 ~ line, data=data.MHP)
+summary(anova_result)
+
+anova_result <- aov(Enterococcus_H_360604 ~ line, data=data.MHP)
+summary(anova_result)
+
+anova_result <- aov(Anaerosphaera_226805 ~ line, data=data.MHP)
+summary(anova_result)
+
+anova_result <- aov(Peptostreptococcus ~ line, data=data.MHP)
+summary(anova_result)
+
+anova_result <- aov(Morganella ~ line, data=data.MHP)
+summary(anova_result)
+```
+# ANOVA models for variables [^3]
+```
+
+meta <- read.csv(file = "L6clean3.csv", header = TRUE)
+
+View(meta)
+
+meta_spp <- mvabund(meta[, 7:270])
+
+par(mar = c(2, 10, 2, 2)) # adjusts the margins
+boxplot(meta[, 7:270], horizontal = TRUE, las = 2, main = "Abundance")
+#OTUs 1 to 4 are much more abundant and variable than others. It's probably a good idea to check our mean-variance relationship
+
+
+meanvar.plot(meta_spp)
+#species with low mean have low variance and high means (on the x axis) also have high variances (y axis). We can deal with this relationship by choosing a family of GLMs with an appropriate mean-variance assumption.
+#The default family used by mvabund when fitting multivariate GLMs is negative binomial.
+
+plot(meta_spp ~ as.factor(meta$Diet), cex.axis = 0.8, cex = 0.8)
+
+mod1 <- manyglm(meta_spp ~ meta$Diet, family = "poisson")
+plot(mod1) #not evenly distributed. not good
+
+mod2 <- manyglm(meta_spp ~ meta$Diet, family = "negative_binomial")
+plot(mod2) #This residual plot is much better, there is now no discernible fan shape and we will use this model for all further analysis.
+
+anova(mod2)
+
+plot1<- anova(mod2, p.uni = "adjusted")
+
+
+mod3 <- manyglm(meta_spp ~ meta$gut.mass, family = "negative_binomial")
+plot(mod3)
+anova(mod3)
+
+mod4 <- manyglm(meta_spp ~ meta$biomass, family = "negative_binomial")
+plot(mod4)
+anova(mod4)
+
+mod5 <- manyglm(meta_spp ~ meta$bioconversion, family = "negative_binomial")
+anova(mod5)
+
+mod6 <- manyglm(meta_spp ~ meta$endpoint, family = "negative_binomial")
+anova(mod6)
+
+
+mod7 <- manyglm(meta_spp ~ meta$Diet*meta$Line*meta$Substrate*meta$Larval.age, family = "negative_binomial")
+anova(mod7)
+```
+
+# PERMANOVA
+
+```
+genus_matrix <- as.matrix(genus)
+
+**Combine the genera data with the categorical variables in the 'meta' dataframe**
+  data_combined <- cbind(meta[, c("Diet", "Line", "Substrate", "Larval.age")], genus_matrix)
+
+**Perform PERMANOVA**
+  permanova_result <- adonis2(genus_matrix ~ Diet + Line + Larval.age, data = data_combined, permutations = 999)
+
+print(permanova_result)
+
+```
+
+# PCOA plots using the same phyloseq object
+
+**PCOA: for each diet based on experimental days**
+  
+  **CF**
+  
+ ``` 
+  ps.sub.CTRL <- subset_samples(ps, diet %in% c("D0", "CF"))
+
+dist = phyloseq::distance(ps.sub.CTRL, method="bray")
+ordination = ordinate(ps.sub.CTRL, method="PCoA", distance=dist)
+
+p1<-plot_ordination(ps.sub.CTRL, ordination, color="experimental.day", shape = "line") + 
+  theme_bw()+ geom_point(size=3)+ ggtitle("CF") + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+
+print(p1)
+
+```
+**NUS**
+```
+  ps.sub.NUS <- subset_samples(ps, diet %in% c("D0", "NUS"))
+
+dist = phyloseq::distance(ps.sub.NUS, method="bray")
+ordination = ordinate(ps.sub.NUS, method="PCoA", distance=dist)
+
+p2<- plot_ordination(ps.sub.NUS, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("NUS") + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+
+print(p2)
+```
+**MHP**
+```  
+  ps.sub.MHP <- subset_samples(ps, diet %in% c("D0", "MHP"))
+
+dist = phyloseq::distance(ps.sub.MHP, method="bray")
+ordination = ordinate(ps.sub.MHP, method="PCoA", distance=dist)
+
+p3<- plot_ordination(ps.sub.MHP, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("MHP")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p3)
+```
+**MLP**
+```  
+  ps.sub.MLP <- subset_samples(ps, diet %in% c("D0", "MLP"))
+
+dist = phyloseq::distance(ps.sub.MLP, method="bray")
+ordination = ordinate(ps.sub.MLP, method="PCoA", distance=dist)
+
+p4 <- plot_ordination(ps.sub.MLP, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("MLP")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p4)
+```
+**M**
+```  
+  ps.sub.M <- subset_samples(ps, diet %in% c("D0", "M"))
+
+dist = phyloseq::distance(ps.sub.M, method="bray")
+ordination = ordinate(ps.sub.M, method="PCoA", distance=dist)
+
+p5 <- plot_ordination(ps.sub.M, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("M")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p5)
+```
+**P**
+```  
+  ps.sub.P <- subset_samples(ps, diet %in% c("D0", "P"))
+
+dist = phyloseq::distance(ps.sub.P, method="bray")
+ordination = ordinate(ps.sub.P, method="PCoA", distance=dist)
+
+p6 <- plot_ordination(ps.sub.P, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("P")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p6)
+```
+**OKA**
+```  
+  ps.sub.OKA <- subset_samples(ps, diet %in% c("D0", "OKA"))
+
+dist = phyloseq::distance(ps.sub.OKA, method="bray")
+ordination = ordinate(ps.sub.OKA, method="PCoA", distance=dist)
+
+p7 <- plot_ordination(ps.sub.OKA, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("OKA")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p7)
+```
+**PKM**
+```  
+  ps.sub.PKM <- subset_samples(ps, diet %in% c("D0", "PKM"))
+
+dist = phyloseq::distance(ps.sub.PKM, method="bray")
+ordination = ordinate(ps.sub.PKM, method="PCoA", distance=dist)
+
+p8 <- plot_ordination(ps.sub.PKM, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("PKM")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p8)
+```
+**RIB**
+```  
+  ps.sub.RIB <- subset_samples(ps, diet %in% c("D0", "RIB"))
+
+dist = phyloseq::distance(ps.sub.RIB, method="bray")
+ordination = ordinate(ps.sub.RIB, method="PCoA", distance=dist)
+
+p9 <- plot_ordination(ps.sub.RIB, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("RIB")  + stat_ellipse(aes(group = experimental.day), linetype = 2) +
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p9)
+```
+**SBM**
+```  
+  ps.sub.SBM <- subset_samples(ps, diet %in% c("D0", "SBM"))
+
+dist = phyloseq::distance(ps.sub.SBM, method="bray")
+ordination = ordinate(ps.sub.SBM, method="PCoA", distance=dist)
+
+p10 <- plot_ordination(ps.sub.SBM, ordination, color="experimental.day", shape = "line") + geom_point(size=3) +
+  theme_bw() + ggtitle("SBM")  + stat_ellipse(aes(group = experimental.day), linetype = 2) + 
+  scale_color_manual(values=c("orange", "deeppink", "brown4"),limits = c("D0", "D5", "D10"))+ labs(shape="Line", colour="Experimental Day")+ scale_shape_manual(values=c(16, 1))+
+  theme(strip.background = element_blank())
+
+print(p10)
+
+
+ggarrange(p1, p2, p8, p10, p5, p3, p9, p6, p7, p4, nrow=5, ncol=2, common.legend = TRUE, legend="bottom")
+```
+
+---
+
+# Differential abundance analysis using the same phyloseq object
+```
+sample_data(ps)$line <- as.factor(sample_data(ps)$line) # factorize for DESeq2
+ps.taxa <- tax_glom(ps, taxrank = 'Genus', NArm = FALSE)
+```
+**DeSeq2**
+```
+ps.taxa.sub <- subset_samples(ps.taxa, type %in% c("WT", "LD"))
+# filter sparse features, with > 90% zeros
+ps.taxa.pse.sub <- prune_taxa(rowSums(otu_table(ps.taxa.sub) == 0) < ncol(otu_table(ps.taxa.sub)) * 0.9, ps.taxa.sub)
+ps_ds = phyloseq_to_deseq2(ps.taxa.pse.sub, ~ line)
+# use alternative estimator on a condition of "every gene contains a sample with a zero"
+ds <- estimateSizeFactors(ps_ds, type="poscounts")
+ds = DESeq(ds, test="Wald", fitType="parametric")
+alpha = 0.05 
+res = results(ds, alpha=alpha)
+res = res[order(res$padj, na.last=NA), ]
+taxa_sig = rownames(res[1:20, ]) # select bottom 20 with lowest p.adj values
+ps.taxa.rel <- transform_sample_counts(ps, function(x) x/sum(x)*100)
+ps.taxa.rel.sig <- prune_taxa(taxa_sig, ps.taxa.rel)
+
+ps.taxa.rel.sig <- prune_samples(colnames(otu_table(ps.taxa.pse.sub)), ps.taxa.rel.sig)
+ps.taxa.rel.sig
+```
+
+# Taxa abundance boxplot using the same phyloseq object [^2]
+**Phylum boxplot**
+```
+ps_rel_abund = phyloseq::transform_sample_counts(ps, function(x){x / sum(x)})
+
+
+ps_phylum <- phyloseq::tax_glom(ps_rel_abund, "Phylum")
+phyloseq::taxa_names(ps_phylum) <- phyloseq::tax_table(ps_phylum)[, "Phylum"]
+#phyloseq::otu_table(ps_phylum)[1:5, 1:5]
+ps_phylum <- microbiomeutilities::aggregate_top_taxa2(ps_phylum, "Phylum", top = 5)
+
+
+p<-phyloseq::psmelt(ps_phylum) %>%
+  ggplot(data = ., aes(x=diet, y = Abundance)) +
+  geom_boxplot(outlier.shape  = NA) +
+  geom_jitter(aes(shape = line)) + theme_bw()+ theme(legend.position="none")+
+  scale_shape_manual(values = c(WT = 1,LD = 16)) +
+  labs(x = "", y = "Relative Abundance\n") +
+  facet_wrap(~ OTU, scales = "free")
+
+p + ggtitle("A")+ ylim(0,1.0) +scale_x_discrete(limits = c("D0", "CF", "MHP", "MLP","M","NUS","OKA","PKM","P","RIB","SBM"))
+
+
+**Genus boxplot**
+
+table(phyloseq::tax_table(ps)[, "Genus"])
+ps_rel_abund = phyloseq::transform_sample_counts(ps, function(x){x / sum(x)})
+phyloseq::otu_table(ps)[1:5, 1:5]
+phyloseq::otu_table(ps_rel_abund)[1:5, 1:5]
+ps_genus <- phyloseq::tax_glom(ps_rel_abund, "Genus")
+phyloseq::taxa_names(ps_genus) <- phyloseq::tax_table(ps_genus)[, "Genus"]
+phyloseq::otu_table(ps_genus)[1:5, 1:5]
+
+ps_genus <- microbiomeutilities::aggregate_top_taxa2(ps_genus, "Genus", top = 14)
+
+variable_names <- list(
+  "Dysgonomonas" ="Dysgonomonas",
+  "Enterococcus_H_360604" = "Enterococcus",
+  "Klebsiella_724518" = "Klebsiella",
+  "Lacrimispora" ="Lacrimispora",
+  "Lactiplantibacillus"="Lactiplantibacillus",
+  "Levilactobacillus"="Levilactobacillus",
+  "Morganella"="Morganella",
+  "Other"="Other",
+  "Paenibacillus_J_366884" = "Paenibacillus",
+  "Proteus"="Proteus",
+  "Providencia_A_732258"= "Providencia",
+  "Scrofimicrobium"="Scrofimicrobium",
+  "Sphingobacterium"="Sphingobacterium",
+  "Unclassified Enterobacteriaceae_A" = "Unclassified Enterobacteriaceae",
+  "Unclassified Enterococcaceae"="Unclassified Enterococcaceae")
+
+
+variable_labeller <- function(variable,value){
+  return(variable_names[value])
+}
+
+
+p2<-phyloseq::psmelt(ps_genus) %>%
+  ggplot(data = ., aes(x = diet, y = Abundance)) +
+  geom_boxplot(outlier.shape  = NA) +
+  geom_jitter(aes(shape = line)) + theme_bw()+ 
+  scale_shape_manual(values = c(WT = 1,LD = 16)) +
+  labs(x = "", y = "Relative Abundance\n") + theme(legend.position="none")+
+  facet_wrap(~ OTU, scales = "free",ncol = 3,labeller=variable_labeller)
+
+
+p2 + ggtitle("B") +scale_x_discrete(limits = c("D0", "CF", "MHP", "MLP","M","NUS","OKA","PKM","P","RIB","SBM"))
+```
+---
+
+# Beta diversity
+```
+relab_genera = transform_sample_counts(ps, function(x) x / sum(x) * 100)
+
+abrel_bray <- phyloseq::distance(relab_genera, method = "bray")
+abrel_bray <- as.matrix(abrel_bray)
+head(abrel_bray)[,1:6]
+
+# Save the matrix as a table
+write.table(abrel_bray, file = "Final_bray_curtis_result.txt", sep = "\t", col.names = NA)
+```
+---
+  
+# SIMPER analysis
+  
+**OTU differences in categories**
+
+```
+  
+OTU2 <- read.table(file = "OTU2.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+```
+**Line**
+```
+simper(OTU.clean2, meta2$line, permutations=100)
+
+kruskal.test(OTU.clean2$Providencia_A_732258 ~ meta2$line)
+kruskal.test(OTU.clean2$Scrofimicrobium ~ meta2$line)
+kruskal.test(OTU.clean2$Dysgonomonas ~ meta2$line)
+kruskal.test(OTU.clean2$Levilactobacillus ~ meta2$line)
+kruskal.test(OTU.clean2$Proteus ~ meta2$line)
+kruskal.test(OTU.clean2$Bacillus_P_294101 ~ meta2$line)
+kruskal.test(OTU.clean2$Enterococcus_H_360604 ~ meta2$line)
+kruskal.test(OTU.clean2$Paenibacillus_J_366884 ~ meta2$line)
+kruskal.test(OTU.clean2$Klebsiella_724518 ~ meta2$line)
+kruskal.test(OTU.clean2$Lysinibacillus_304693 ~ meta2$line)
+kruskal.test(OTU.clean2$Lactiplantibacillus ~ meta2$line)
+kruskal.test(OTU.clean2$Morganella ~ meta2$line)
+kruskal.test(OTU.clean2$Lacrimispora ~ meta2$line)
+kruskal.test(OTU.clean2$Sphingobacterium ~ meta2$line)
+kruskal.test(OTU.clean2$Peptostreptococcus ~ meta2$line)
+```
+
+**Age**
+```
+simper(OTU.clean2, meta2$age, permutations=100)
+
+kruskal.test(OTU.clean2$Providencia_A_732258 ~ meta2$age)
+kruskal.test(OTU.clean2$Scrofimicrobium ~ meta2$age)
+kruskal.test(OTU.clean2$Dysgonomonas ~ meta2$age)
+kruskal.test(OTU.clean2$Levilactobacillus ~ meta2$age)
+kruskal.test(OTU.clean2$Lysinibacillus_304693 ~ meta2$age)
+kruskal.test(OTU.clean2$Bacillus_P_294101 ~ meta2$age)
+kruskal.test(OTU.clean2$Morganella ~ meta2$age)
+kruskal.test(OTU.clean2$Lacrimispora ~ meta2$age)
+kruskal.test(OTU.clean2$Klebsiella_724518 ~ meta2$age)
+kruskal.test(OTU.clean2$Proteus ~ meta2$age)
+kruskal.test(OTU.clean2$Lactiplantibacillus ~ meta2$age)
+kruskal.test(OTU.clean2$Enterococcus_H_360604 ~ meta2$age)
+kruskal.test(OTU.clean2$Paenibacillus_J_366884 ~ meta2$age)
+kruskal.test(OTU.clean2$Sphingobacterium ~ meta2$age)
+kruskal.test(OTU.clean2$Ignatzschineria ~ meta2$age)
+```
+
+**Substrate**
+```
+simper(OTU.clean2, meta2$substrate, permutations=100)
+
+kruskal.test(OTU.clean2$Providencia_A_732258 ~ meta2$substrate)
+kruskal.test(OTU.clean2$Scrofimicrobium ~ meta2$substrate)
+kruskal.test(OTU.clean2$Dysgonomonas ~ meta2$substrate)
+kruskal.test(OTU.clean2$Levilactobacillus ~ meta2$substrate)
+kruskal.test(OTU.clean2$Proteus ~ meta2$substrate)
+kruskal.test(OTU.clean2$Enterococcus_H_360604 ~ meta2$substrate)
+kruskal.test(OTU.clean2$Paenibacillus_J_366884 ~ meta2$substrate)
+kruskal.test(OTU.clean2$Klebsiella_724518 ~ meta2$substrate)
+kruskal.test(OTU.clean2$Lactiplantibacillus ~ meta2$substrate)
+kruskal.test(OTU.clean2$Morganella ~ meta2$substrate)
+kruskal.test(OTU.clean2$Lacrimispora ~ meta2$substrate)
+kruskal.test(OTU.clean2$Sphingobacterium ~ meta2$substrate)
+kruskal.test(OTU.clean2$Acetobacter ~ meta2$substrate)
+
+```
+**Diets** 
+**CF**
+```
+OTU2 <- read.table(file = "OTUCF.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "CF")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+
+
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+
+**SBM**
+```
+
+OTU2 <- read.table(file = "OTUSBM.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "SBM")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+
+
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+**RIB**
+```
+OTU2 <- read.table(file = "OTURIB.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "RIB")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+```
+
+**P**
+```
+OTU2 <- read.table(file = "OTUP.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "P")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+**PKM**
+```
+OTU2 <- read.table(file = "OTUPKM.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "PKM")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+
+**OKA**
+```
+OTU2 <- read.table(file = "OTUOKA.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "OKA")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+
+```
+**NUS**
+```
+OTU2 <- read.table(file = "OTUNUS.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "NUS")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+**M**
+```
+OTU2 <- read.table(file = "OTUM.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "M")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+
+```
+**MLP**
+```
+OTU2 <- read.table(file = "OTUMLP.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "MLP")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+
+**MHP**
+```
+OTU2 <- read.table(file = "OTUMHP.txt", sep = "\t", header = T)
+meta2 <- read.table(file = "metadata.txt", header = T, sep = "\t")
+
+meta2 <- subset(meta2, diet %in% "MHP")
+row.names(OTU2) = OTU2$Group
+
+OTU.clean2 = OTU2[,-which(names(OTU2) %in% "Group")]
+
+OTU.clean2 = OTU.clean2[order(row.names(OTU.clean2)),]
+meta2 = meta2[order(row.names(meta2)),]
+simper(OTU.clean2, meta2$line, permutations=100)
+```
+---
+  
+# RDA analysis [^4],[^5],[^6]
+```
+
+otu <- read.table(file = "feature-table.tsv", sep = "\t", header = T, row.names = 1, 
+                  skip = 1, comment.char = "")
+taxonomy <- read.table(file = "taxonomy.tsv", sep = "\t", header = T ,row.names = 1)
+
+tax <- taxonomy %>%
+  select(Taxon) %>% 
+  separate(Taxon, c("Kingdom", "Phylum", "Class", "Order", "Family", "Genus", "Species"), "; ")
+
+tax.clean <- data.frame(row.names = row.names(tax),
+                        Kingdom = str_replace(tax[,1], "d__",""),
+                        Phylum = str_replace(tax[,2], "p__",""),
+                        Class = str_replace(tax[,3], "c__",""),
+                        Order = str_replace(tax[,4], "o__",""),
+                        Family = str_replace(tax[,5], "f__",""),
+                        Genus = str_replace(tax[,6], "g__",""),
+                        Species = str_replace(tax[,7], "s__",""),
+                        stringsAsFactors = FALSE)
+
+tax.clean[is.na(tax.clean)] <- ""
+tax.clean[tax.clean=="__"] <- ""
+
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,7] != ""){
+    tax.clean$Species[i] <- paste(tax.clean$Genus[i], tax.clean$Species[i], sep = " ")
+  } else if (tax.clean[i,2] == ""){
+    kingdom <- paste("Unclassified", tax.clean[i,1], sep = " ")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Unclassified", tax.clean[i,2], sep = " ")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Unclassified", tax.clean[i,3], sep = " ")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Unclassified", tax.clean[i,4], sep = " ")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Unclassified", tax.clean[i,5], sep = " ")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Unclassified ",tax.clean$Genus[i], sep = " ")
+  }
+}
+
+
+metadata <- read.table(file = "3RDAmeta.txt", sep = "\t", header = T, row.names = 1)
+OTU = otu_table(as.matrix(otu), taxa_are_rows = TRUE)  
+TAX = tax_table(as.matrix(tax.clean))  
+SAMPLE <- sample_data(metadata)  
+TREE = read_tree("tree.nwk")  
+ps <- phyloseq(OTU, TAX, SAMPLE,TREE)
+
+
+ps.diet <- subset_samples(ps, diet %in% c("CF", "OKA","PKM","MLP","RIB","P","NUS","SBM","M"))
+
+
+renamer <- function(x) str_replace(x, pattern = "_", replacement = " ")
+
+p<- ps.diet %>%
+  tax_transform("hellinger", rank = "Genus") %>%
+  ord_calc(
+    constraints = c("fat", "protein", "carb","ash"),
+    # method = "RDA", # Note: you can specify RDA explicitly, and it is good practice to do so, but microViz can guess automatically that you want an RDA here (helpful if you don't remember the name?)
+    scale_cc = FALSE # doesn't make a difference
+  ) %>%
+  ord_plot(
+    colour = "diet", size = 3, alpha = 0.5, shape = "experimental.day", auto_caption = NA,
+    plot_taxa = 1:10, taxon_renamer = renamer, tax_vec_length = 2.5, tax_lab_length = 2.6,
+    tax_lab_style = tax_lab_style(
+      type = "text", max_angle = 90, fontface = "bold.italic", size = 3),
+    constraint_lab_style = constraint_lab_style(
+      alpha = 0.8, size = 3.5))+ 
+  coord_fixed(ratio = 1, clip = "off", xlim = c(-1, 1.4))
+
+
+p + stat_ellipse(aes(linetype = Substrate, colour=diet)) + scale_shape_manual(name= "Larval age", values = c("D5"=0,"D10"=15))+ scale_color_manual(name= "Diet", values = c("CF"="darkgoldenrod1","OKA"="red","P"="deeppink","PKM"="darkorange","RIB"="darkgreen","SBM"="chartreuse","MLP"="cyan3","M"="darkblue","NUS"="darkorchid"))
+
+print(p)
+```
+# RDA correlation of micronutrients to taxa [^7]
+```
+library(microeco)
+library(magrittr)
+
+view(metadata)
+
+dataset <- microtable$new(sample_table = metadata, otu_table = otu, tax_table = tax.clean, phylo_tree = TREE)
+dataset
+
+t1 <- trans_env$new(dataset = dataset, env_cols = 14:17)
+```
+**ANOVA**
+  
+```
+t1$cal_diff(group = "diet", method = "anova")
+head(t1$res_diff)
+
+
+t1$cal_diff(group = "experimental.day", method = "anova")
+head(t1$res_diff)
+
+
+t1$cal_diff(group = "line", method = "anova")
+head(t1$res_diff)
+```
+**boxplot of ANOVA (Diet)**
+
+```
+t1$cal_diff(method = "anova", group = "diet")
+# place all the plots into a list
+tmp <- list()
+for(i in colnames(t1$data_env)){
+  tmp[[i]] <- t1$plot_diff(measure = i, add_sig_text_size = 5, xtext_size = 10) + theme(plot.margin = unit(c(0.1, 0, 0, 1), "cm"))
+}
+plot(gridExtra::arrangeGrob(grobs = tmp, ncol = 2))
+```
+**boxplot of ANOVA (experimental day)**
+
+```
+t1$cal_diff(method = "anova", group = "experimental.day")
+# place all the plots into a list
+tmp <- list()
+for(i in colnames(t1$data_env)){
+  tmp[[i]] <- t1$plot_diff(measure = i, add_sig_text_size = 5, xtext_size = 12) + theme(plot.margin = unit(c(0.1, 0, 0, 1), "cm"))
+}
+plot(gridExtra::arrangeGrob(grobs = tmp, ncol = 2))
+```
+**boxplot of ANOVA (line)**
+
+```
+t1$cal_diff(method = "anova", group = "line")
+# place all the plots into a list
+tmp <- list()
+for(i in colnames(t1$data_env)){
+  tmp[[i]] <- t1$plot_diff(measure = i, add_sig_text_size = 5, xtext_size = 12) + theme(plot.margin = unit(c(0.1, 0, 0, 1), "cm"))
+}
+plot(gridExtra::arrangeGrob(grobs = tmp, ncol = 2))
+
+
+library(GGally)
+
+t1$cal_autocor()
+
+t1$cal_autocor(group = "experimental.day")
+
+t1$cal_autocor(group = "line")
+
+t1$cal_autocor(group = "diet")
+
+
+**'p_adjust_type = "Env"' means p adjustment is performed for each environmental variable separately**
+
+t1$cal_cor(use_data = "Genus", p_adjust_method = "fdr", p_adjust_type = "Env")
+
+t1$plot_cor()
+
+**filter genera that do not have at least one (***)**
+
+plot <- t1$plot_cor(filter_feature = c("", "*", "**"))
+
+plot <- plot + theme(text = element_text(size = 14))
+
+print(plot)
+```
+---
+# Tutorials
+[^1]: https://forum.qiime2.org/t/tutorial-integrating-qiime2-and-r-for-data-visualization-and-analysis-using-qiime2r/4121
+[^2]: https://www.nicholas-ollberding.com/post/introduction-to-the-statistical-analysis-of-microbiome-data-in-r/
+[^3]: https://environmentalcomputing.net/statistics/mvabund/
+[^4]: https://fawda123.github.io/ggord/reference/ggord.html
+[^5]: https://david-barnett.github.io/microViz/articles/web-only/ordination.html#rda
+[^6]: https://david-barnett.github.io/microViz/reference/ord_plot.html
+[^7]: https://chiliubio.github.io/microeco_tutorial/explainable-class.html#trans_env-class (Section 3 and 7)
+[^8]: https://www.scribbr.com/statistics/anova-in-r/
+[^9]: http://www.sthda.com/english/wiki/manova-test-in-r-multivariate-analysis-of-variance
+[^10]: https://www.data-to-viz.com/graph/heatmap.html
+[^11]: Tutotial: https://microbiome.github.io/tutorials/core_venn.html, https://microbiome.github.io/tutorials/Core.html
